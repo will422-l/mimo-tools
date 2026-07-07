@@ -13,6 +13,7 @@ Official-style Xiaomi MiMo command-line interface for the **documented** public 
 - speech synthesis (built-in voice)
 - speech synthesis (voice design)
 - speech synthesis (voice clone)
+- speech recognition / ASR (transcription)
 - Feishu voice message sending
 
 It also includes **reserved namespaces** for capabilities that appear in product/news materials but are **not yet documented as stable public API endpoints**. Those commands intentionally fail with a clear message instead of pretending support.
@@ -186,6 +187,37 @@ All TTS commands support `--format wav|mp3|opus`:
 mimo tts "Hello" --voice Mia --format mp3 -o hello.mp3
 ```
 
+#### Streaming TTS
+
+`mimo-v2.5-tts` supports low-latency streaming output. Use `--stream` to receive audio in real time; the CLI splices the streamed `pcm16` chunks into a single wav (24kHz mono) — no extra dependencies required:
+
+```bash
+mimo tts "This is a streaming test" --voice Chloe --stream -o stream.wav
+```
+
+> Voice design (`mimo-v2.5-tts-voicedesign`) and voice clone (`mimo-v2.5-tts-voiceclone`) streaming is currently in a downgraded compatibility mode on the server side — they only return the result once after inference completes. `--stream` still works but offers no latency benefit for those two models yet.
+
+### Speech recognition (ASR)
+
+Transcribe audio (wav/mp3) to text via `mimo-v2.5-asr`. Supports bilingual Chinese/English with auto-detection, dialects (Wu/Cantonese/Minnan/Sichuanese), lyrics, and noisy/far-field/multi-speaker audio:
+
+```bash
+# Auto-detect language
+mimo speech transcribe ./meeting.wav
+
+# Force Chinese / English recognition
+mimo speech transcribe ./voice.wav --language zh
+mimo speech transcribe ./voice.mp3 --language en
+
+# Stream the transcript as it is generated
+mimo speech transcribe ./meeting.wav --stream
+
+# Full raw response (usage includes audio_tokens + seconds)
+mimo speech transcribe ./voice.wav --raw
+```
+
+Requirements: input must be `wav` or `mp3`, base64 payload ≤ 10MB.
+
 ### Feishu voice message sending
 
 Send TTS-generated audio as a native Feishu voice message (not a file attachment):
@@ -216,18 +248,18 @@ These commands are intentionally present as stable UX placeholders, but they cur
 ```bash
 mimo image generate
 mimo music generate
-mimo speech transcribe
 mimo gui
 ```
 
-Why? Because Xiaomi MiMo public docs currently do **not** provide enough stable API detail for these capabilities, and this project prefers explicit placeholders over fake support.
+Why? Because Xiaomi MiMo public docs currently do **not** provide enough stable API detail for these capabilities, and this project prefers explicit placeholders over fake support. (Speech recognition / ASR was previously reserved but is now implemented — see `mimo speech transcribe` above.)
 
 ## Documented capability map
 
 ### Explicitly documented in current MiMo public API docs
 
-- `mimo-v2.5-pro` / `mimo-v2-pro` / `mimo-v2.5` / `mimo-v2-omni` / `mimo-v2-flash`
-  - text generation
+- `mimo-v2.5-pro` / `mimo-v2.5` / `mimo-v2-pro` / `mimo-v2-omni` / `mimo-v2-flash`
+  - text generation (1M context / 128K output for pro & v2.5; 256K/128K for omni; 256K/64K for flash)
+  - deep thinking (thinking mode)
   - function calling
   - structured output
   - web search
@@ -235,11 +267,14 @@ Why? Because Xiaomi MiMo public docs currently do **not** provide enough stable 
   - image understanding
   - audio understanding
   - video understanding
+- `mimo-v2.5-asr` (released 2026-06-02)
+  - speech recognition / transcription (Chinese + English + dialects + lyrics)
 - `mimo-v2.5-tts`
-  - built-in voice TTS (8 preset voices)
+  - built-in voice TTS (8 preset voices + `mimo_default`)
   - natural language style control / director mode
   - audio tag control
   - singing style
+  - low-latency streaming output
 - `mimo-v2.5-tts-voicedesign`
   - voice design from text description
   - director mode
@@ -247,23 +282,43 @@ Why? Because Xiaomi MiMo public docs currently do **not** provide enough stable 
   - voice cloning from audio sample (mp3/wav, max 10MB)
   - director mode
 - `mimo-v2-tts`
-  - older TTS model, still useful for singing style
+  - older TTS model (deprecated 2026-06-30, auto-replaced by `mimo-v2.5-tts`)
+
+### Legacy model deprecation (2026-06-30, Beijing time)
+
+The following legacy models are deprecated and auto-replaced by their v2.5 counterparts. `mimo-cli` keeps them selectable for backward compatibility, but new code should target the v2.5 models:
+
+| Deprecated | Replacement | System replacement | Deprecation |
+|---|---|---|---|
+| `mimo-v2-pro` | `mimo-v2.5-pro` | 2026-06-01 | 2026-06-30 |
+| `mimo-v2-omni` | `mimo-v2.5` | 2026-06-01 | 2026-06-30 |
+| `mimo-v2-flash` | `mimo-v2.5` | 2026-06-18 | 2026-06-30 |
+| `mimo-v2-tts` | `mimo-v2.5-tts` | 2026-06-18 | 2026-06-30 |
 
 ### Reserved, not implemented until publicly documented
 
 - image generation / text-to-image
 - music generation / text-to-music
-- standalone ASR API
 - GUI / computer-use API
 
 ## Notes
 
-- Local media files are automatically converted to data URLs for documented multimodal endpoints.
+- Local media files are automatically converted to data URLs for documented multimodal endpoints. Audio MIME types are normalized to the values the API documents (`audio/wav`, `audio/mpeg`) regardless of the local `mimetypes` mapping.
+- ASR input must be `wav` or `mp3`, with the base64 payload ≤ 10MB.
 - Voice clone samples are validated: only mp3/wav format, max 10MB.
 - Web Search must be enabled for the API key / endpoint you are using. Xiaomi MiMo Token Plan keys can be endpoint-scoped: a key that works on `https://token-plan-cn.xiaomimimo.com/v1` may be invalid on `https://api.xiaomimimo.com/v1`. If the server returns `webSearchEnabled is false`, the request has reached MiMo but that key/endpoint still has Web Search disabled.
 - Saved credentials are stored in `~/.config/mimo-cli/config.json` unless `MIMO_CONFIG_DIR` is set.
 
 ## Changelog
+
+### 0.4.0 — Synced with official MiMo docs (ASR, streaming TTS, deprecation)
+
+- **Added ASR (speech recognition)**: `mimo speech transcribe` now actually calls `mimo-v2.5-asr` instead of returning a reserved error. Supports `--language auto|zh|en`, `--stream`, `--raw`. Input is wav/mp3 (≤10MB base64), MIME normalized to `audio/wav` / `audio/mpeg` per official docs.
+- **Added streaming TTS**: `mimo tts --stream` uses `mimo-v2.5-tts` low-latency streaming (`pcm16`), spliced into a 24kHz mono wav with only the standard library (no numpy/soundfile dependency).
+- **Restored `mimo_default`** as a documented valid voice ID (resolves to 冰糖 on the China cluster, Mia elsewhere).
+- **Updated capability map**: added `asr_models`, `tts_streaming`, `speech_recognition_asr`; removed "standalone ASR HTTP API" from reserved list.
+- **Documented legacy model deprecation** (2026-06-30): `mimo-v2-pro/omni/flash/tts` auto-replaced by v2.5 counterparts; surfaced in `mimo models` output.
+- **Docs refreshed** against the official platform docs (`platform.xiaomimimo.com`), including the MiMo-V2.5 open-source (MIT) and Orbit program notes.
 
 ### 0.3.0 — Integrated Xiaomi official MiMo-Skills
 

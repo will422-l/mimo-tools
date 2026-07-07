@@ -16,6 +16,8 @@
 - TTS 声音设计
 - TTS 声音克隆
 - 唱歌风格 TTS
+- TTS 流式输出（`mimo-v2.5-tts` 低延迟流式）
+- 语音识别 / ASR 转写（`mimo-v2.5-asr`）
 
 ## 预留但暂不实装
 
@@ -23,8 +25,9 @@
 
 - 图像生成 / 文生图
 - 音乐生成 / 文生音乐
-- 独立 ASR HTTP 转写
 - GUI / computer-use
+
+> 注：语音识别（ASR）此前为预留命令，自 v0.4.0 起已正式实装（见下方 `mimo speech transcribe`）。
 
 ## 安装
 
@@ -206,11 +209,42 @@ mimo speech voice-design "年轻女声，明亮，语速偏快，适合科技新
 mimo speech voice-clone ./voice_sample.wav "这是声音克隆测试。" -o clone.wav
 ```
 
+### 流式 TTS
+
+`mimo-v2.5-tts` 支持低延迟流式输出。用 `--stream` 实时接收音频，CLI 会把流式 `pcm16` 分片拼成单个 wav（24kHz 单声道），无需额外依赖：
+
+```bash
+mimo tts "这是一段流式合成测试" --voice Chloe --stream -o stream.wav
+```
+
+> 声音设计（`mimo-v2.5-tts-voicedesign`）和声音克隆（`mimo-v2.5-tts-voiceclone`）的流式目前服务端为降级兼容模式，推理完成后才一次性返回。`--stream` 仍可用，但这两个模型暂时没有延迟收益。
+
+## 语音识别（ASR）
+
+通过 `mimo-v2.5-asr` 把音频（wav/mp3）转成文字。支持中英双语自动检测、方言（吴语/粤语/闽南语/四川话）、歌词转写，以及嘈杂/远场/多人重叠场景：
+
+```bash
+# 自动检测语言
+mimo speech transcribe ./meeting.wav
+
+# 指定中文 / 英文
+mimo speech transcribe ./voice.wav --language zh
+mimo speech transcribe ./voice.mp3 --language en
+
+# 流式输出转写文字
+mimo speech transcribe ./meeting.wav --stream
+
+# 完整原始响应（usage 含 audio_tokens 和 seconds）
+mimo speech transcribe ./voice.wav --raw
+```
+
+要求：输入须为 `wav` 或 `mp3`，base64 载荷 ≤ 10MB。
+
 ## 全能力映射表
 
 | 能力 | 模型 | CLI 命令 | 状态 |
 |---|---|---|---|
-| 文本生成 | `mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2.5`, `mimo-v2-omni`, `mimo-v2-flash` | `mimo chat`, `mimo text chat` | 已实装，已验证 |
+| 文本生成 | `mimo-v2.5-pro`, `mimo-v2.5`, `mimo-v2-pro`, `mimo-v2-omni`, `mimo-v2-flash` | `mimo chat`, `mimo text chat` | 已实装，已验证 |
 | reasoning / thinking | 同文本模型 | `mimo chat --thinking` | 已实装 |
 | 结构化输出 | 同文本模型 | `mimo chat --json-mode` | 已实装 |
 | 函数 / 工具调用 | 同文本模型 | `mimo tool-call`, `mimo text tool-call` | 已实装，已验证返回 `tool_calls` |
@@ -218,14 +252,28 @@ mimo speech voice-clone ./voice_sample.wav "这是声音克隆测试。" -o clon
 | 图像理解 | `mimo-v2.5`, `mimo-v2-omni` | `mimo image-understand`, `mimo vision image` | 已实装 |
 | 音频理解 | `mimo-v2.5`, `mimo-v2-omni` | `mimo audio-understand`, `mimo vision audio` | 已实装 |
 | 视频理解 | `mimo-v2.5`, `mimo-v2-omni` | `mimo video-understand`, `mimo vision video` | 已实装 |
+| 语音识别 / ASR | `mimo-v2.5-asr` | `mimo speech transcribe` | 已实装 |
 | TTS 内置音色 | `mimo-v2.5-tts`, `mimo-v2-tts` | `mimo tts`, `mimo speech synthesize` | 已实装 |
+| TTS 流式输出 | `mimo-v2.5-tts` | `mimo tts --stream` | 已实装 |
 | 唱歌风格 TTS | `mimo-v2.5-tts`, `mimo-v2-tts` | `mimo tts --sing` | 已实装 |
 | 声音设计 | `mimo-v2.5-tts-voicedesign` | `mimo speech voice-design` | 已实装 |
 | 声音克隆 | `mimo-v2.5-tts-voiceclone` | `mimo speech voice-clone` | 已实装 |
 | 图像生成 / 文生图 | 未见稳定公开 API | `mimo image generate` | 预留，明确报错 |
 | 音乐生成 / 文生音乐 | 未见稳定公开 API | `mimo music generate` | 预留，明确报错 |
-| 独立 ASR HTTP 转写 | 未见稳定公开 API | `mimo speech transcribe` | 预留，明确报错 |
 | GUI / computer-use | 未见稳定公开 API | `mimo gui` | 预留，明确报错 |
+
+## 旧模型废弃说明（2026-06-30 北京时间）
+
+以下旧模型已废弃并由 v2.5 系列自动替换。`mimo-cli` 仍允许选择它们以保持向后兼容，但新代码应直接使用 v2.5 模型：
+
+| 废弃模型 | 替换模型 | 系统替换时间 | 下线时间 |
+|---|---|---|---|
+| `mimo-v2-pro` | `mimo-v2.5-pro` | 2026-06-01 | 2026-06-30 |
+| `mimo-v2-omni` | `mimo-v2.5` | 2026-06-01 | 2026-06-30 |
+| `mimo-v2-flash` | `mimo-v2.5` | 2026-06-18 | 2026-06-30 |
+| `mimo-v2-tts` | `mimo-v2.5-tts` | 2026-06-18 | 2026-06-30 |
+
+> 注：`mimo-v2-tts` 下线后，`mimo_default` 音色在中国集群映射为 `冰糖`、其他集群映射为 `Mia`。
 
 ## 预留命令
 
@@ -234,11 +282,20 @@ mimo speech voice-clone ./voice_sample.wav "这是声音克隆测试。" -o clon
 ```bash
 mimo image generate
 mimo music generate
-mimo speech transcribe
 mimo gui
 ```
 
 原因：目前公开 API 文档里还没有稳定接口说明。等官方文档或可验证接口出现后，可以直接在这些命名空间下补实现。
+
+## 关于官方文档
+
+本版本依据小米 MiMo 开放平台官方文档（`platform.xiaomimimo.com`）同步：
+
+- **MiMo-V2.5 系列已开源**（MIT 协议，支持商用推理部署与二次训练，无需额外授权），模型权重见 [HuggingFace XiaomiMiMo](https://huggingface.co/collections/XiaomiMiMo/mimo-v25)。
+- `mimo-v2.5-pro`：1T 参数 / 42B 激活 / 1M 上下文，面向 Agent 与 Coding 深度优化。
+- `mimo-v2.5`：原生全模态（文本/图像/视频/音频），1M 上下文，Agent 能力对标 pro。
+- `mimo-v2.5-asr`：中英双语 + 方言 + 歌词转写，嘈杂/远场/多人场景稳健。
+- 官方同时兼容 OpenAI API 与 Anthropic API 两种格式。
 
 ## License
 

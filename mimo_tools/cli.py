@@ -10,13 +10,17 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 APP_NAME = "mimo-cli"
 CONFIG_DIR = Path(os.environ.get("MIMO_CONFIG_DIR", Path.home() / ".config" / APP_NAME))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 DEFAULT_BASE_URL = "https://api.xiaomimimo.com"
 DEFAULT_TIMEOUT = int(os.environ.get("MIMO_TIMEOUT", "300"))
+# Documented preset voices for mimo-v2.5-tts.
+# "mimo_default" is the official default voice ID: it resolves to 冰糖 on the
+# China cluster and Mia on other clusters (see official TTS docs).
 PRESET_VOICES = [
+    "mimo_default",
     "冰糖", "茉莉", "苏打", "白桦",  # 中文音色
     "Mia", "Chloe", "Milo", "Dean",  # 英文音色
 ]
@@ -25,6 +29,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "base_url": DEFAULT_BASE_URL,
     "default_text_model": "mimo-v2.5-pro",
     "default_vision_model": "mimo-v2.5",
+    "default_asr_model": "mimo-v2.5-asr",
     "default_tts_model": "mimo-v2.5-tts",
     "default_voice": "冰糖",
     "timeout": DEFAULT_TIMEOUT,
@@ -131,6 +136,27 @@ def file_to_data_url(path: str) -> str:
     return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
 
 
+def audio_data_url(path: str) -> str:
+    """Build a data URL with the MIME the MiMo API documents for audio.
+
+    Official ASR docs require wav -> ``audio/wav`` and mp3 -> ``audio/mpeg``
+    (or ``audio/mp3``). ``mimetypes.guess_type`` may return ``audio/x-wav``
+    on some platforms, so we normalize here for API compatibility.
+    """
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".wav":
+        mime = "audio/wav"
+    elif suffix == ".mp3":
+        mime = "audio/mpeg"
+    else:
+        mime, _ = mimetypes.guess_type(str(p))
+        if not mime:
+            mime = "application/octet-stream"
+    raw = p.read_bytes()
+    return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+
 def maybe_media_ref(value: str, kind: str) -> Dict[str, Any]:
     if value.startswith("http://") or value.startswith("https://") or value.startswith("data:"):
         return {kind: {"url": value} if kind in {"image_url", "video_url"} else {"data": value}}
@@ -164,6 +190,36 @@ def save_audio_from_message(message: Dict[str, Any], out_path: str) -> None:
         raise MimoError("No audio returned in response")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_bytes(base64.b64decode(audio["data"]))
+
+
+def save_streamed_pcm16_as_wav(response, out_path: str) -> None:
+    """Splice streamed TTS pcm16 chunks (delta.audio.data, base64) into a wav.
+
+    Official MiMo streaming TTS emits 24kHz mono PCM16LE audio across SSE
+    chunks. This collects every chunk's raw bytes and writes a single wav
+    using only the standard library (no numpy/soundfile dependency).
+    """
+    import wave
+    buf = bytearray()
+    chunk_count = 0
+    for chunk in parse_sse_lines(response):
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        audio = delta.get("audio")
+        if not audio or not audio.get("data"):
+            continue
+        buf.extend(base64.b64decode(audio["data"]))
+        chunk_count += 1
+    if not buf:
+        raise MimoError("No audio chunks received from streaming TTS response")
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(out_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(24000)
+        wf.writeframes(bytes(buf))
 
 
 def print_json(obj: Any) -> None:
@@ -209,10 +265,13 @@ def capability_map() -> Dict[str, Any]:
     return {
         "text_models": [
             "mimo-v2.5-pro",
-            "mimo-v2-pro",
             "mimo-v2.5",
+            "mimo-v2-pro",
             "mimo-v2-omni",
             "mimo-v2-flash",
+        ],
+        "asr_models": [
+            "mimo-v2.5-asr",
         ],
         "tts_models": [
             "mimo-v2.5-tts",
@@ -226,15 +285,23 @@ def capability_map() -> Dict[str, Any]:
             "image_understanding": ["mimo-v2.5", "mimo-v2-omni"],
             "audio_understanding": ["mimo-v2.5", "mimo-v2-omni"],
             "video_understanding": ["mimo-v2.5", "mimo-v2-omni"],
+            "speech_recognition_asr": ["mimo-v2.5-asr"],
             "tts_builtin_voice": ["mimo-v2.5-tts", "mimo-v2-tts"],
+            "tts_streaming": ["mimo-v2.5-tts"],
             "tts_voice_design": ["mimo-v2.5-tts-voicedesign"],
             "tts_voice_clone": ["mimo-v2.5-tts-voiceclone"],
             "singing_style": ["mimo-v2.5-tts", "mimo-v2-tts"],
         },
+        "deprecated_models": {
+            "note": "Legacy models are deprecated 2026-06-30 (Beijing time) and auto-replaced.",
+            "mimo-v2-pro": {"replacement": "mimo-v2.5-pro", "system_replacement_time": "2026-06-01", "deprecation_time": "2026-06-30"},
+            "mimo-v2-omni": {"replacement": "mimo-v2.5", "system_replacement_time": "2026-06-01", "deprecation_time": "2026-06-30"},
+            "mimo-v2-flash": {"replacement": "mimo-v2.5", "system_replacement_time": "2026-06-18", "deprecation_time": "2026-06-30"},
+            "mimo-v2-tts": {"replacement": "mimo-v2.5-tts", "system_replacement_time": "2026-06-18", "deprecation_time": "2026-06-30"},
+        },
         "reserved_not_yet_documented": [
             "image generation / text-to-image",
             "music generation / text-to-music",
-            "standalone ASR HTTP API docs",
             "GUI/computer-use API details",
         ],
     }
@@ -477,6 +544,21 @@ def cmd_tts(args: argparse.Namespace) -> None:
     voice = args.voice or get_config_value("default_voice")
     if voice not in PRESET_VOICES:
         print(f"Warning: '{voice}' is not a documented preset voice. Valid: {', '.join(PRESET_VOICES)}", file=sys.stderr)
+    if args.stream:
+        # Official streaming TTS uses pcm16 chunks; we splice them into a wav.
+        payload = {
+            "model": args.model or get_config_value("default_tts_model"),
+            "messages": messages,
+            "audio": {"voice": voice, "format": "pcm16"},
+            "stream": True,
+        }
+        response = post_chat(payload, args=args, stream=True)
+        save_streamed_pcm16_as_wav(response, args.output)
+        if args.raw:
+            print(f"(streamed audio written to {args.output}; raw stream not captured)")
+        else:
+            print(args.output)
+        return
     payload = {
         "model": args.model or get_config_value("default_tts_model"),
         "messages": messages,
@@ -659,8 +741,53 @@ def cmd_music_generate(_: argparse.Namespace) -> None:
     reserved_feature("music generation / text-to-music")
 
 
-def cmd_asr_transcribe(_: argparse.Namespace) -> None:
-    reserved_feature("standalone ASR transcription API")
+def cmd_asr_transcribe(args: argparse.Namespace) -> None:
+    """Speech recognition (ASR) via mimo-v2.5-asr.
+
+    Officially documented API (2026-06-02 release). Accepts a local wav/mp3
+    file, converts to a data URL, and submits via /v1/chat/completions with
+    the ``mimo-v2.5-asr`` model. Optional ``asr_options.language`` selects
+    auto/zh/en. Supports streaming output.
+    """
+    audio_path = args.audio
+    if not audio_path:
+        raise MimoError("Audio file is required. Pass a positional path or pipe stdin.")
+    p = Path(audio_path)
+    if not p.exists():
+        raise MimoError(f"Audio file not found: {audio_path}")
+    # Validate format & size consistent with official docs (mp3/wav, <=10MB base64)
+    suffix = p.suffix.lower()
+    if suffix not in {".mp3", ".wav"}:
+        raise MimoError(f"Unsupported audio format: {suffix}. Only mp3 and wav are supported for ASR.")
+    data_url = audio_data_url(audio_path)
+    payload: Dict[str, Any] = {
+        "model": "mimo-v2.5-asr",
+        "messages": [{
+            "role": "user",
+            "content": [{"type": "input_audio", "input_audio": {"data": data_url}}],
+        }],
+    }
+    if args.language and args.language != "auto":
+        payload["asr_options"] = {"language": args.language}
+    if args.stream:
+        payload["stream"] = True
+        response = post_chat(payload, args=args, stream=True)
+        for chunk in parse_sse_lines(response):
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            content = delta.get("content")
+            if content:
+                print(content, end="", flush=True)
+        print()
+        return
+    data = post_chat(payload, args=args).json()
+    if args.raw:
+        print_json(data)
+        return
+    msg = extract_message(data)
+    print(msg.get("content", ""))
 
 
 def cmd_gui(_: argparse.Namespace) -> None:
@@ -764,10 +891,11 @@ def add_tts_args(s: argparse.ArgumentParser) -> None:
     s.add_argument("-o", "--output", required=True)
     s.add_argument("--model")
     s.add_argument("--voice", choices=PRESET_VOICES, help=f"Preset voice ({', '.join(PRESET_VOICES)})")
-    s.add_argument("--format", default="wav", choices=["wav", "mp3", "opus"], help="Audio output format")
+    s.add_argument("--format", default="wav", choices=["wav", "mp3", "opus"], help="Audio output format (ignored when --stream uses pcm16)")
     s.add_argument("--context", help="Natural language style control / director mode (replaces --instruction)")
     s.add_argument("--instruction", help="[Deprecated] Use --context instead")
     s.add_argument("--sing", action="store_true", help="Prefix text with MiMo singing style tag")
+    s.add_argument("--stream", action="store_true", help="Stream audio (mimo-v2.5-tts low-latency; output as wav from pcm16)")
     s.add_argument("--raw", action="store_true")
     s.set_defaults(func=cmd_tts)
 
@@ -917,8 +1045,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("receive_id_type", choices=["open_id", "chat_id"], help="Feishu receive ID type")
     s.add_argument("receive_id", help="Feishu receive ID (open_id or chat_id)")
     s.set_defaults(func=cmd_feishu_send_audio)
-    s = speech_sub.add_parser("transcribe", help="Reserved ASR command")
-    s.add_argument("audio", nargs="?")
+    s = speech_sub.add_parser("transcribe", help="Speech recognition (ASR) via mimo-v2.5-asr")
+    add_common_api_key_arg(s)
+    s.add_argument("audio", help="Audio file path (wav or mp3, max 10MB base64)")
+    s.add_argument("--language", choices=["auto", "zh", "en"], default="auto", help="Recognition language (default: auto-detect)")
+    s.add_argument("--stream", action="store_true", help="Stream transcription text as it is generated")
+    s.add_argument("--raw", action="store_true", help="Print the full raw API response")
     s.set_defaults(func=cmd_asr_transcribe)
 
     image = sub.add_parser("image", help="Image generation reserved namespace")

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mimo-cli"
-version = "0.3.0"
-description = "Xiaomi MiMo API CLI: chat, tool calling, web search, multimodal understanding, and TTS."
+version = "0.4.0"
+description = "Xiaomi MiMo API CLI: chat, tool calling, web search, multimodal understanding, ASR, and TTS."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{name = "will422-l"}]

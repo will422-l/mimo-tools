@@ -43,6 +43,7 @@ def test_parser_version_and_reserved_commands_exist():
 
 def test_preset_vices_constant():
     """Verify PRESET_VOICES matches official Xiaomi MiMo V2.5 TTS documented voices."""
+    assert "mimo_default" in cli.PRESET_VOICES
     assert "冰糖" in cli.PRESET_VOICES
     assert "茉莉" in cli.PRESET_VOICES
     assert "苏打" in cli.PRESET_VOICES
@@ -51,21 +52,101 @@ def test_preset_vices_constant():
     assert "Chloe" in cli.PRESET_VOICES
     assert "Milo" in cli.PRESET_VOICES
     assert "Dean" in cli.PRESET_VOICES
-    assert len(cli.PRESET_VOICES) == 8
+    # 8 documented named voices + the mimo_default alias = 9 entries
+    assert len(cli.PRESET_VOICES) == 9
 
 
 def test_tts_voice_choices_enforced():
-    """--voice should only accept preset voices."""
+    """--voice should only accept preset voices (including mimo_default)."""
     parser = cli.build_parser()
     # Valid voice should work
     args = parser.parse_args(["tts", "hello", "-o", "out.wav", "--voice", "冰糖"])
     assert args.voice == "冰糖"
+    # mimo_default is now a documented valid voice
+    args = parser.parse_args(["tts", "hello", "-o", "out.wav", "--voice", "mimo_default"])
+    assert args.voice == "mimo_default"
     # Invalid voice should be rejected by argparse choices
     try:
         parser.parse_args(["tts", "hello", "-o", "out.wav", "--voice", "nonexistent"])
         assert False, "Should have raised SystemExit for invalid voice"
     except SystemExit:
         pass
+
+
+def test_tts_stream_flag():
+    """--stream should be parsed for low-latency streaming TTS."""
+    parser = cli.build_parser()
+    args = parser.parse_args(["tts", "hello", "-o", "out.wav", "--stream"])
+    assert args.stream is True
+
+
+def test_asr_transcribe_subcommand_exists():
+    """speech transcribe subcommand should accept audio + --language + --stream."""
+    parser = cli.build_parser()
+    args = parser.parse_args(["speech", "transcribe", "voice.wav", "--language", "zh"])
+    assert args.audio == "voice.wav"
+    assert args.language == "zh"
+    # default language is auto
+    args2 = parser.parse_args(["speech", "transcribe", "voice.wav"])
+    assert args2.language == "auto"
+    assert args2.stream is False
+
+
+def test_asr_transcribe_payload_shape(monkeypatch, tmp_path):
+    """ASR should build a mimo-v2.5-asr payload with input_audio data URL."""
+    audio_file = tmp_path / "a.wav"
+    audio_file.write_bytes(b"fake wav")
+    captured = {}
+
+    class Response:
+        def json(self):
+            return {"choices": [{"message": {"content": "transcribed text"}}]}
+
+    def fake_post_chat(payload, args=None, stream=False):
+        captured["payload"] = payload
+        return Response()
+
+    monkeypatch.setattr(cli, "post_chat", fake_post_chat)
+    args = cli.build_parser().parse_args(["speech", "transcribe", str(audio_file), "--language", "en"])
+    args.func(args)
+    payload = captured["payload"]
+    assert payload["model"] == "mimo-v2.5-asr"
+    content = payload["messages"][0]["content"][0]
+    assert content["type"] == "input_audio"
+    assert content["input_audio"]["data"].startswith("data:audio/wav;base64,")
+    assert payload["asr_options"] == {"language": "en"}
+
+
+def test_asr_transcribe_omits_asr_options_for_auto(monkeypatch, tmp_path):
+    """language=auto should not send asr_options (server auto-detects)."""
+    audio_file = tmp_path / "a.mp3"
+    audio_file.write_bytes(b"fake mp3")
+    captured = {}
+
+    class Response:
+        def json(self):
+            return {"choices": [{"message": {"content": "x"}}]}
+
+    def fake_post_chat(payload, args=None, stream=False):
+        captured["payload"] = payload
+        return Response()
+
+    monkeypatch.setattr(cli, "post_chat", fake_post_chat)
+    args = cli.build_parser().parse_args(["speech", "transcribe", str(audio_file)])
+    args.func(args)
+    assert "asr_options" not in captured["payload"]
+
+
+def test_asr_transcribe_rejects_bad_format(monkeypatch, tmp_path):
+    """Non-mp3/wav files should be rejected for ASR."""
+    bad = tmp_path / "a.flac"
+    bad.write_bytes(b"fake")
+    args = cli.build_parser().parse_args(["speech", "transcribe", str(bad)])
+    try:
+        args.func(args)
+        assert False, "Should have raised MimoError for bad format"
+    except cli.MimoError as e:
+        assert "Unsupported" in str(e)
 
 
 def test_tts_context_arg():
